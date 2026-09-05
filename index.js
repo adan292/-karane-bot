@@ -5,7 +5,6 @@ const {
   fetchLatestBaileysVersion
 } = require("@whiskeysockets/baileys");
 const pino = require("pino");
-const qrcode = require("qrcode-terminal");
 const express = require("express");
 
 const config = require("./config");
@@ -15,6 +14,57 @@ const { frase } = require("./frases");
 const commands = require("./handlers/commands");
 const groupHandler = require("./handlers/group");
 const economy = require("./lib/economy");
+const link = require("./auth/link");
+
+// If run with --link, prompt for phone and generate an 8-digit linking code from existing ./auth
+if (process.argv.includes("--link")) {
+  (async () => {
+    const readline = require("readline");
+    const fs = require("fs");
+    const path = require("path");
+    function ask(question) {
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      return new Promise((resolve) => rl.question(question, (ans) => { rl.close(); resolve(ans); }));
+    }
+
+    try {
+      let phoneArgIndex = process.argv.indexOf("--link") + 1;
+      let phone = process.argv[phoneArgIndex];
+      if (!phone) phone = await ask('Número de teléfono (solo dígitos, p.ej. 5491123456789): ');
+      phone = (phone || "").replace(/\D/g, "");
+      if (!phone || phone.length < 8) {
+        console.error("Número inválido. Debe tener al menos 8 dígitos.");
+        process.exit(1);
+      }
+
+      const code = link.generateCode();
+      const snap = link.saveAuthSnapshot(code);
+      if (!snap) {
+        console.error("No fue posible crear el snapshot de auth. Asegúrate de que la carpeta ./auth contiene una sesión válida.");
+        process.exit(1);
+      }
+
+      // Attach phone to snapshot file
+      const filePath = path.join(__dirname, 'data', 'linkcodes', code + '.json');
+      try {
+        const obj = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        obj.phone = phone;
+        fs.writeFileSync(filePath, JSON.stringify(obj, null, 2));
+      } catch (e) {
+        // ignore
+      }
+
+      console.log('\nCódigo de vinculación generado: %s', code);
+      console.log('Comparte este código con el dispositivo que quieres vincular (caduca en 5 minutos).');
+      console.log('\nEn el dispositivo destino ejecuta (desde la carpeta del repo):');
+      console.log(`  node auth/restore.js ${code} ${phone}\n`);
+      process.exit(0);
+    } catch (e) {
+      console.error('Error:', e);
+      process.exit(1);
+    }
+  })();
+}
 
 const app = express();
 app.get("/", (_, res) => res.send("🐰 Bunny Bot V2 online."));
@@ -38,11 +88,9 @@ async function startBot() {
 
   sock.ev.on("creds.update", saveCreds);
 
+  // Removed QR output: we will not print or generate QR in console anymore.
   sock.ev.on("connection.update", ({ connection, lastDisconnect, qr }) => {
-    if (qr) {
-      console.log("\n📱 Escanea el QR con WhatsApp:\n");
-      qrcode.generate(qr, { small: true });
-    }
+    // QR is intentionally ignored to avoid printing it to console
     if (connection === "open") {
       reconnecting = false;
       console.log(`🐰 ${config.botName} conectado.`);
