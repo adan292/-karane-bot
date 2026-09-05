@@ -16,21 +16,27 @@ const groupHandler = require("./handlers/group");
 const economy = require("./lib/economy");
 const link = require("./auth/link");
 
-// If run with --link, prompt for phone and generate an 8-digit linking code from existing ./auth
+// --link flow: supports non-interactive via env LINK_PHONE or CLI arg, or interactive fallback
 if (process.argv.includes("--link")) {
   (async () => {
     const readline = require("readline");
     const fs = require("fs");
     const path = require("path");
+
     function ask(question) {
       const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
       return new Promise((resolve) => rl.question(question, (ans) => { rl.close(); resolve(ans); }));
     }
 
     try {
-      let phoneArgIndex = process.argv.indexOf("--link") + 1;
-      let phone = process.argv[phoneArgIndex];
-      if (!phone) phone = await ask('Número de teléfono (solo dígitos, p.ej. 5491123456789): ');
+      const idx = process.argv.indexOf("--link");
+      // priority: CLI argument after --link, then env LINK_PHONE
+      let phone = process.argv[idx + 1] && !process.argv[idx + 1].startsWith("--") ? process.argv[idx + 1] : process.env.LINK_PHONE;
+      if (!phone) {
+        // if running in interactive shell, prompt
+        if (process.stdin.isTTY) phone = await ask('Número de teléfono (solo dígitos, p.ej. 5491123456789): ');
+      }
+
       phone = (phone || "").replace(/\D/g, "");
       if (!phone || phone.length < 8) {
         console.error("Número inválido. Debe tener al menos 8 dígitos.");
@@ -45,13 +51,13 @@ if (process.argv.includes("--link")) {
       }
 
       // Attach phone to snapshot file
-      const filePath = path.join(__dirname, 'data', 'linkcodes', code + '.json');
       try {
+        const filePath = path.join(__dirname, 'data', 'linkcodes', code + '.json');
         const obj = JSON.parse(fs.readFileSync(filePath, 'utf8'));
         obj.phone = phone;
         fs.writeFileSync(filePath, JSON.stringify(obj, null, 2));
       } catch (e) {
-        // ignore
+        // ignore non-fatal
       }
 
       console.log('\nCódigo de vinculación generado: %s', code);
@@ -88,9 +94,8 @@ async function startBot() {
 
   sock.ev.on("creds.update", saveCreds);
 
-  // Removed QR output: we will not print or generate QR in console anymore.
+  // QR output removed on purpose: linking is done with the 8-digit code flow
   sock.ev.on("connection.update", ({ connection, lastDisconnect, qr }) => {
-    // QR is intentionally ignored to avoid printing it to console
     if (connection === "open") {
       reconnecting = false;
       console.log(`🐰 ${config.botName} conectado.`);
