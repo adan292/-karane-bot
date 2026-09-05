@@ -13,13 +13,24 @@ import fetch from 'node-fetch'
  * - https://api.example.com/search    (se añadirá ?q=...)
  */
 
-const API_URL = process.env.BUNNY_GIRL_BOT_URL || ''
-const API_KEY = process.env.BUNNY_GIRL_BOT_KEY || ''
+// Soportar varios nombres de variable de entorno por compatibilidad
+const API_URL =
+  process.env.BUNNY_GIRL_BOT_URL ||
+  process.env.BUNNY_GIRL_URL ||
+  process.env.BUNNY_GIRL_API_URL ||
+  process.env.PINTEREST_API_URL ||
+  ''
+const API_KEY =
+  process.env.BUNNY_GIRL_BOT_KEY ||
+  process.env.BUNNY_GIRL_KEY ||
+  process.env.BUNNY_GIRL_API_KEY ||
+  process.env.PINTEREST_API_KEY ||
+  ''
 
 export default {
   command: ['pinterest', 'pin'],
   category: 'downloads',
-  description: 'Buscar y descargar imágenes de Pinterest usando Bunny_girl_bot API.',
+  description: 'Buscar y descargar imágenes de Pinterest usando Bunny_girl_bot API o un fallback público.',
   run: async ({ msg, usedPrefix, command }) => {
     try {
       const text = (msg?.body || '').trim()
@@ -33,19 +44,28 @@ export default {
         )
       }
 
+      // Si no hay API configurada, intentaremos un fallback que raspa la página pública de Pinterest
+      const useFallback = !API_URL
+
       if (!API_URL) {
-        return msg.reply(
-          `La API de Bunny_girl_bot no está configurada. Define la variable de entorno BUNNY_GIRL_BOT_URL con el endpoint de la API.`
-        )
+        // no devolvemos error inmediato: avisamos en consola y seguimos con fallback
+        console.warn('Bunny_girl_bot API no configurada. Intentando fallback con la página pública de Pinterest.')
       }
 
       // Construir URL: soporta placeholder {query} o añade ?q= si no existe.
-      const url = API_URL.includes('{query}')
-        ? API_URL.replace(/{query}/g, encodeURIComponent(query))
-        : `${API_URL}${API_URL.includes('?') ? '&' : '?'}q=${encodeURIComponent(query)}`
+      let url
+      if (!useFallback) {
+        url = API_URL.includes('{query}')
+          ? API_URL.replace(/{query}/g, encodeURIComponent(query))
+          : `${API_URL}${API_URL.includes('?') ? '&' : '?'}q=${encodeURIComponent(query)}`
+      } else {
+        // Fallback: usar r.jina.ai para recuperar la HTML pública de Pinterest (raw proxy)
+        // Este servicio devuelve el HTML de la página solicitada; no es oficial de Pinterest.
+        url = `https://r.jina.ai/http://www.pinterest.com/search/pins/?q=${encodeURIComponent(query)}`
+      }
 
       const headers = { 'Accept': 'application/json' }
-      if (API_KEY) headers['Authorization'] = `Bearer ${API_KEY}`
+      if (API_KEY && !useFallback) headers['Authorization'] = `Bearer ${API_KEY}`
 
       const res = await fetch(url, { headers })
       if (!res.ok) {
@@ -54,35 +74,68 @@ export default {
         )
       }
 
-      // Intentar parsear JSON; si la API devuelve texto/imagen directa, manejamos también.
+      // Intentar parsear JSON; si la API devuelve texto/HTML, manejamos también.
       let data
-      const contentType = res.headers.get('content-type') || ''
+      const contentType = (res.headers.get('content-type') || '').toLowerCase()
       if (contentType.includes('application/json')) {
         data = await res.json()
       } else {
-        // Respuesta no-JSON: puede ser URL en texto plano
+        // Respuesta no-JSON: puede ser HTML (fallback) o texto plano
         const textBody = await res.text()
-        data = { _raw: textBody }
+        if (!useFallback) {
+          data = { _raw: textBody }
+        } else {
+          // En el fallback, parseamos HTML para extraer la primera imagen de Pinterest
+          const html = textBody
+          // Buscar og:image
+          let match = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)
+          let imageUrl = match ? match[1] : null
+
+          // Si no hay og:image, buscar imágenes de CDN de Pinterest (i.pinimg.com)
+          if (!imageUrl) {
+            match = html.match(/https?:\/\/i.pinimg.com\/[^"'\s>]+/i)
+            if (match) imageUrl = match[0]
+          }
+
+          // Como último recurso, buscar cualquier <img src="...">
+          if (!imageUrl) {
+            match = html.match(/<img[^>]+src=["']([^"']+)["']/i)
+            if (match) imageUrl = match[1]
+          }
+
+          data = { image: imageUrl }
+        }
       }
 
       // Buscar URL de imagen en varios campos comunes; añade más rutas si tu API usa otros nombres.
       const imageUrl =
         // respuestas simples
         (typeof data === 'string' && data) ||
-        data.url ||
-        data.image ||
-        data.image_url ||
-        data.img ||
+        data?.url ||
+        data?.image ||
+        data?.image_url ||
+        data?.img ||
         // arrays
-        (Array.isArray(data.images) && data.images[0]) ||
-        (Array.isArray(data.result) && (data.result[0]?.url || data.result[0]?.image)) ||
+        (Array.isArray(data?.images) && data.images[0]) ||
+        (Array.isArray(data?.result) && (data.result[0]?.url || data.result[0]?.image)) ||
         // raw text
-        data._raw ||
+        data?._raw ||
         null
 
       if (!imageUrl) {
+        // Si no encontramos imagen y no usamos fallback, dar mensaje con instrucciones
+        if (!useFallback) {
+          return msg.reply(
+            `No encontré imágenes para "${query}". Revisa que la variable de entorno BUNNY_GIRL_BOT_URL esté bien definida (acepta placeholders {query}).\n` +
+            `Variables alternativas soportadas: BUNNY_GIRL_BOT_URL, BUNNY_GIRL_URL, BUNNY_GIRL_API_URL, PINTEREST_API_URL.\n` +
+            `Si tu API requiere clave, define BUNNY_GIRL_BOT_KEY o BUNNY_GIRL_KEY.`
+          )
+        }
+
+        // Si usamos fallback y no hay imagen, informar al usuario
         return msg.reply(
-          `No encontré imágenes para "${query}".`
+          `No pude extraer una imagen de Pinterest para "${query}" usando el método alternativo. ` +
+          `Puedes configurar una API dedicada (BUNNY_GIRL_BOT_URL) para mejores resultados.`
         )
       }
 
