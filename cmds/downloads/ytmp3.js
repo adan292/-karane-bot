@@ -1,5 +1,6 @@
 import yts from 'yt-search'
 import fetch from 'node-fetch'
+import { spawn } from 'child_process'
 
 const MAX_REINTENTOS = 3
 const ESPERA_BASE_MS = 1500
@@ -8,7 +9,7 @@ const MAX_MB_AUDIO = 50 * 1024 * 1024
 const MAX_MB_VIDEO = 100 * 1024 * 1024
 
 const ALIAS_MENU = ['play']
-const ALIAS_AUDIO_DIRECTO = ['mp3', 'ytmp3', 'ytaudio', 'playaudio']
+const ALIAS_AUDIO_DIRECTO = ['mp3', 'ytmp3', 'ytaudio', 'playaudio', 'voice', 'ytvoice']
 
 function getPendingMap(sock) {
   if (!sock._ginkoPlayPending) sock._ginkoPlayPending = new Map()
@@ -51,6 +52,39 @@ function esMp3Valido(buf) {
 function esMp4Valido(buf) {
   if (!buf || buf.length < 12) return false
   try { return buf.slice(4, 8).toString('latin1') === 'ftyp' } catch { return false }
+}
+
+// Convierte MP3 en buffer a OPUS (OGG) usando ffmpeg y devuelve buffer
+async function convertirMp3AOpusBuffer(mp3Buffer) {
+  return new Promise((resolve, reject) => {
+    const ff = spawn('ffmpeg', [
+      '-hide_banner', '-loglevel', 'error',
+      '-i', 'pipe:0',
+      '-c:a', 'libopus',
+      '-b:a', '64k',
+      '-vbr', 'on',
+      '-f', 'ogg',
+      'pipe:1'
+    ])
+    const chunks = []
+    const errChunks = []
+
+    ff.stdout.on('data', d => chunks.push(d))
+    ff.stderr.on('data', d => errChunks.push(d))
+    ff.on('error', err => reject(err))
+    ff.on('close', code => {
+      if (code !== 0) {
+        const msg = Buffer.concat(errChunks).toString() || `ffmpeg exited ${code}`
+        return reject(new Error(msg))
+      }
+      resolve(Buffer.concat(chunks))
+    })
+
+    try {
+      ff.stdin.write(mp3Buffer)
+      ff.stdin.end()
+    } catch (err) { reject(err) }
+  })
 }
 
 const isYTUrl = (url = '') =>
@@ -193,7 +227,7 @@ async function procesarRespuesta(sock, m) {
     const emoji = String(reaction.text || '').trim()
     const job = pending.get(reaction.key.id)
     if (job && !job._procesando && !job._completado) {
-      const mapeo = { '👍': 'audio', '❤️': 'video', '📄': 'audiodoc', '📁': 'videodoc' }
+      const mapeo = { '👍': 'audio', '❤️': 'video', '📄': 'audiodoc', '📁': 'videodoc', '🔊': 'voice' }
       const eleccion = mapeo[emoji]
       if (eleccion) await ejecutarDescarga(sock, job, eleccion, m)
     }
@@ -251,6 +285,7 @@ async function procesarRespuesta(sock, m) {
       else if (['2','video','mp4'].includes(primera)) await ejecutarDescarga(sock, job, 'video', m)
       else if (['3','videodoc'].includes(primera)) await ejecutarDescarga(sock, job, 'videodoc', m)
       else if (['4','audiodoc'].includes(primera)) await ejecutarDescarga(sock, job, 'audiodoc', m)
+      else if (['5','voice','voz','nota','voicenote','ptt'].includes(primera)) await ejecutarDescarga(sock, job, 'voice', m)
     }
   }
 }
@@ -265,27 +300,49 @@ async function ejecutarDescarga(sock, job, modo, m) {
   else if (id === '__ginko_pa' || id === 'audio' || id === '1' || id === 'mp3' || id === '👍' || id === '🎵') { tipo = 'audio'; comoDoc = false }
   else if (id === '__ginko_pvd' || id === 'videodoc' || id === '3' || id === '📁') { tipo = 'video'; comoDoc = true }
   else if (id === '__ginko_pv' || id === 'video' || id === '2' || id === 'mp4' || id === '❤️' || id === '🎬') { tipo = 'video'; comoDoc = false }
+  else if (id === 'voice' || id === 'ptt' || id === 'voz' || id === '5' || id === '🔊') { tipo = 'voice'; comoDoc = false }
 
-  const reactionEmoji = tipo === 'audio' ? (comoDoc ? '📄' : '🎵') : (comoDoc ? '📁' : '🎬')
+  const reactionEmoji = tipo === 'audio' ? (comoDoc ? '📄' : '🎵') : (tipo === 'video' ? (comoDoc ? '📁' : '🎬') : '🔊')
   try { await sock.sendMessage(chat, { react: { text: reactionEmoji, key: m.key } }) } catch {}
 
   await sock.sendMessage(chat, {
-    text: `⏳ Descargando ${tipo === 'audio' ? 'audio (MP3)' : 'video (MP4)'}${comoDoc ? ' como documento' : ''}...\n> *${job.title}*`
+    text: `⏳ Descargando ${tipo === 'audio' ? 'audio (MP3)' : tipo === 'video' ? 'video (MP4)' : 'nota de voz (PTT)'}${comoDoc ? ' como documento' : ''}...\n> *${job.title}*`
   }, { quoted: m })
 
   try {
     if (tipo === 'audio') {
       const r = await descargarAudio(job.url)
-      if (r.buffer.length > MAX_MB_AUDIO) throw new Error(`El audio es demasiado grande (más de ${Math.round(MAX_MB_AUDIO/1024/1024)} MB)`)
+      if (r.buffer.length > MAX_MB_AUDIO) throw new Error(`El audio es demasiado grande (más de ${Math.round(MAX_MB_AUDIO/1024/1024)} MB)`) 
       await sock.sendMessage(chat, {
         [comoDoc ? 'document' : 'audio']: r.buffer,
         mimetype: 'audio/mpeg',
         fileName: `${sanitizeFilename(job.title)}.mp3`,
         ptt: false
       }, { quoted: m })
+    } else if (tipo === 'voice') {
+      const r = await descargarAudio(job.url)
+      if (r.buffer.length > MAX_MB_AUDIO) throw new Error(`El audio es demasiado grande (más de ${Math.round(MAX_MB_AUDIO/1024/1024)} MB)`) 
+      try {
+        const opusBuf = await convertirMp3AOpusBuffer(r.buffer)
+        // Enviar como nota de voz (OGG/Opus). Muchos clientes esperan audio/ogg; codecs=opus
+        await sock.sendMessage(chat, {
+          audio: opusBuf,
+          mimetype: 'audio/ogg; codecs=opus',
+          ptt: true,
+          fileName: `${sanitizeFilename(job.title)}.ogg`
+        }, { quoted: m })
+      } catch (err) {
+        // Fallback: enviar MP3 si la conversión falla
+        await sock.sendMessage(chat, {
+          [comoDoc ? 'document' : 'audio']: r.buffer,
+          mimetype: 'audio/mpeg',
+          fileName: `${sanitizeFilename(job.title)}.mp3`,
+          ptt: false
+        }, { quoted: m })
+      }
     } else {
       const r = await descargarVideo(job.url)
-      if (r.buffer.length > MAX_MB_VIDEO) throw new Error(`El video es demasiado grande (más de ${Math.round(MAX_MB_VIDEO/1024/1024)} MB)`)
+      if (r.buffer.length > MAX_MB_VIDEO) throw new Error(`El video es demasiado grande (más de ${Math.round(MAX_MB_VIDEO/1024/1024)} MB)`) 
       if (!esMp4Valido(r.buffer)) {
         comoDoc = true
         await sock.sendMessage(chat, { text: '⚠️ La API no devolvió un MP4 válido, te lo envío como documento.' }, { quoted: m }).catch(() => {})
@@ -341,7 +398,17 @@ const cmd = {
         const estado = await sock.sendMessage(msg.chat, { text: `⏳ Descargando *${title}*...` }, { quoted: msg }).catch(() => null)
         try {
           const r = await descargarAudio(url)
-          await sock.sendMessage(msg.chat, { audio: r.buffer, fileName: `${sanitizeFilename(title)}.mp3`, mimetype: 'audio/mpeg' }, { quoted: msg })
+          if (command === 'voice' || command === 'ytvoice') {
+            try {
+              const opusBuf = await convertirMp3AOpusBuffer(r.buffer)
+              await sock.sendMessage(msg.chat, { audio: opusBuf, mimetype: 'audio/ogg; codecs=opus', ptt: true, fileName: `${sanitizeFilename(title)}.ogg` }, { quoted: msg })
+            } catch (err) {
+              // fallback to mp3
+              await sock.sendMessage(msg.chat, { audio: r.buffer, fileName: `${sanitizeFilename(title)}.mp3`, mimetype: 'audio/mpeg' }, { quoted: msg })
+            }
+          } else {
+            await sock.sendMessage(msg.chat, { audio: r.buffer, fileName: `${sanitizeFilename(title)}.mp3`, mimetype: 'audio/mpeg' }, { quoted: msg })
+          }
           try { if (estado?.key) await sock.sendMessage(msg.chat, { delete: estado.key }) } catch {}
         } catch (e) {
           await msg.reply(`《✧》No se pudo descargar el audio: ${e?.message || e}`)
@@ -371,15 +438,17 @@ const cmd = {
           `   *1* o *audio*   → Audio MP3 🎵\n` +
           `   *2* o *video*   → Video MP4 🎬\n` +
           `   *3* o *videodoc* → Video como documento 📁\n` +
-          `   *4* o *audiodoc* → Audio como documento 📄`
+          `   *4* o *audiodoc* → Audio como documento 📄\n` +
+          `   *5* o *voice* → Nota de voz (PTT) 🔊`
         : infoTxt +
           `🟡 *Reacciona a este mensaje* con un emoji:\n` +
           `   👍  → Audio MP3 🎵\n` +
           `   ❤️  → Video MP4 🎬\n` +
           `   📄  → Audio como documento\n` +
-          `   📁  → Video como documento\n\n` +
+          `   📁  → Video como documento\n` +
+          `   🔊  → Nota de voz (PTT)\n\n` +
           `🔵 O bien *cita este mensaje* y escribe:\n` +
-          `   *1* o *audio* / *2* o *video* / *3* o *videodoc* / *4* o *audiodoc*`
+          `   *1* o *audio* / *2* o *video* / *3* o *videodoc* / *4* o *audiodoc* / *5* o *voice*`
 
       // Botones rápidos directos (formato buttonsMessage con type:1 = quick_reply).
       // Dos botones visibles directamente debajo de la imagen: Audio MP3 y Video MP4.
