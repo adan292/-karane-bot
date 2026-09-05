@@ -30,7 +30,7 @@ const API_KEY =
 function unescapeSlashes(s) {
   if (!s) return s
   return s
-    .replace(/\\\\/g, '\\') // \\\\ -> \\
+    .replace(/\\\\/g, '\\') // \\\\ -> \\\\? original intent: \\\\ -> \\
     .replace(/\\\//g, '/')     // \\/ -> /
     .replace(/\\u002F/g, '/')   // \u002F -> /
 }
@@ -72,6 +72,12 @@ export default {
       const headers = { 'Accept': 'application/json' }
       if (API_KEY && !useFallback) headers['Authorization'] = `Bearer ${API_KEY}`
 
+      // Si usamos fallback, pedir la versión cruda pero con User-Agent para evitar bloqueos
+      if (useFallback) {
+        headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'
+        headers['Accept'] = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+      }
+
       const res = await fetch(url, { headers })
       if (!res.ok) {
         return msg.reply(
@@ -94,15 +100,72 @@ export default {
           const html = textBody
           const candidates = new Set()
 
-          // 1) Buscar meta og:image
-          let match = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)
+          // Decodificador ligero de entidades comunes
+          function decodeEntities(str) {
+            if (!str) return str
+            return str
+              .replace(/&amp;/g, '&')
+              .replace(/&lt;/g, '<')
+              .replace(/&gt;/g, '>')
+              .replace(/&quot;/g, '"')
+              .replace(/&#39;/g, "'")
+          }
+
+          // 0) Intentar parsear JSON-LD <script type="application/ld+json">
+          let match = html.match(/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/i)
+          if (match && match[1]) {
+            try {
+              const j = JSON.parse(decodeEntities(match[1]))
+              const imgs = []
+              if (j.image) {
+                if (typeof j.image === 'string') imgs.push(j.image)
+                else if (Array.isArray(j.image)) imgs.push(...j.image)
+                else if (j.image.url) imgs.push(j.image.url)
+              }
+              imgs.forEach(u => u && candidates.add(unescapeSlashes(u)))
+            } catch (_) { /* ignorar parse errors */ }
+          }
+
+          // 1) Buscar JSON embebido típico de Pinterest: window.__INITIAL_STATE__ o __PWS_DATA__
+          const jsonRegexes = [
+            /window\.__INITIAL_STATE__\s*=\s*(\{[\s\S]*?\});?/i,
+            /<script[^>]+id=["']__PWS_DATA__["'][^>]*>([\s\S]*?)<\/script>/i,
+            /<script[^>]*>[\s\S]*?Pinterest\.s\S*?=\s*(\{[\s\S]*?\})<\/script>/i
+          ]
+          for (const r of jsonRegexes) {
+            let m
+            if ((m = r.exec(html))) {
+              let snippet = m[1]
+              try {
+                snippet = decodeEntities(unescapeSlashes(snippet))
+                const parsed = JSON.parse(snippet)
+                const txt = JSON.stringify(parsed)
+                const broadUrlRegex = /https?:\/\/[^"'\\s\\]+/ig
+                let um
+                while ((um = broadUrlRegex.exec(txt)) !== null) {
+                  candidates.add(unescapeSlashes(um[0]))
+                }
+              } catch (_) {
+                // si falla el parseo, intentar extraer URLs del snippet sin parsear
+                const broadUrlRegex = /https?:\\?\\?\\\/\\?\\?[^"'\\s<>]+/ig
+                let um
+                const cleaned = decodeEntities(unescapeSlashes(snippet))
+                while ((um = /https?:\/\/[^"'<>\\s]+/ig.exec(cleaned))) {
+                  candidates.add(um[0])
+                }
+              }
+              break
+            }
+          }
+
+          // 2) Buscar meta og:image
+          match = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)
           if (match && match[1]) candidates.add(unescapeSlashes(match[1]))
 
-          // 2) Buscar imágenes en atributos comunes: src, data-src, data-srcset, srcset
-          const attrRegex = /(?:src|data-src|data-srcset|data-large-image)=["']([^"']+)["']/ig
+          // 3) Buscar imágenes en atributos comunes: src, data-src, data-srcset, srcset, data-large-image
+          const attrRegex = /(?:src|data-src|data-srcset|data-large-image|srcset)=["']([^"']+)["']/ig
           while ((match = attrRegex.exec(html)) !== null) {
-            const val = match[1]
-            // srcset puede contener múltiples URLs
+            const val = decodeEntities(match[1])
             if (val.includes(',')) {
               val.split(',').forEach(part => {
                 const urlPart = part.trim().split(/\s+/)[0]
@@ -113,38 +176,23 @@ export default {
             }
           }
 
-          // 3) Buscar URLs escapadas de i.pinimg.com (https:\/\/i.pinimg.com\/...)
+          // 4) Buscar URLs escapadas de i.pinimg.com (https:\/\/i.pinimg.com\/...)
           const escapedPinRegex = /https?:\\\/\\\/i\.pinimg\.com\\\/[\w\-\\\/\.]+/ig
           while ((match = escapedPinRegex.exec(html)) !== null) {
             candidates.add(unescapeSlashes(match[0]))
           }
 
-          // 4) Buscar URLs directas a i.pinimg.com no escapadas
+          // 5) Buscar URLs directas a i.pinimg.com no escapadas
           const pinRegex = /https?:\/\/i\.pinimg\.com\/[\w\-\/\.]+/ig
           while ((match = pinRegex.exec(html)) !== null) {
             candidates.add(match[0])
           }
 
-          // 5) Extraer cualquier URL del HTML (será filtrada luego)
-          const urlRegex = /https?:\\?\\?\\\/\\?\\?[^"'\s<>]+/ig
-          // Simplify: run a broad URL regex on both raw and unescaped HTML
+          // 6) Broad URL scan en versión unescaped/decoded
           const broadUrlRegex = /https?:\/\/[^")'>\s]+/ig
-          let unescaped = unescapeSlashes(html)
+          const unescaped = decodeEntities(unescapeSlashes(html))
           while ((match = broadUrlRegex.exec(unescaped)) !== null) {
             candidates.add(match[0])
-          }
-
-          // 6) Intentar extraer JSON embebido que contenga 'images' o 'pin' y buscar URLs dentro
-          const jsonLikeRegex = /\{[^\}]{0,8000}?(?:images|pin|urls|i\.pinimg\.com)[^\}]{0,8000}\}/gis
-          while ((match = jsonLikeRegex.exec(html)) !== null) {
-            const snippet = match[0]
-            // Buscar URLs en el snippet
-            const uRegex = /https?:\\?\\?\\\/\\?\\?[^"'\s<>]+/ig
-            const cleaned = unescapeSlashes(snippet)
-            let um
-            while ((um = broadUrlRegex.exec(cleaned)) !== null) {
-              candidates.add(um[0])
-            }
           }
 
           // 7) Como último recurso, buscar la primera <img src=...>
