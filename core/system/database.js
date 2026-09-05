@@ -113,7 +113,7 @@ export const defChatUser = {
 
 export const defSets = {
   self: 0,
-  prefix: '[\"/\",\"!\",\".\",\"#\"]',
+  prefix: '["/","!",".","#"]',
   commandsejecut: 0,
   newsletter_id: '',
   nameid: '',
@@ -186,7 +186,7 @@ export function initDB() {
     CREATE TABLE IF NOT EXISTS settings (
       id TEXT PRIMARY KEY,
       self BOOLEAN DEFAULT 0,
-      prefix TEXT DEFAULT '[\"/\",\"!\",\".\",\"#\"]',
+      prefix TEXT DEFAULT '["/","!",".","#"]',
       commandsejecut INTEGER DEFAULT 0,
       newsletter_id TEXT DEFAULT '',
       nameid TEXT DEFAULT '',
@@ -220,7 +220,20 @@ export function getUser(id, opt = {}) {
   if (cached !== undefined) return cached;
   let user = stmt('SELECT * FROM users WHERE id = ?').get(id);
   if (!user) {
-    stmt(`INSERT OR IGNORE INTO users (id, name, exp, level, usedcommands, pasatiempo, description, marry, genre, birth, metadatos, metadatos2) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, defUser.name, defUser.exp, defUser.level, defUser.usedcommands, defUser.pasatiempo, defUser.description, defUser.marry, defUser.genre, defUser.birth, defUser.metadatos, defUser.metadatos2);
+    stmt(`INSERT OR IGNORE INTO users (id, name, exp, level, usedcommands, pasatiempo, description, marry, genre, birth, metadatos, metadatos2) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      id,
+      defUser.name,
+      defUser.exp,
+      defUser.level,
+      defUser.usedcommands,
+      defUser.pasatiempo,
+      defUser.description,
+      defUser.marry,
+      defUser.genre,
+      defUser.birth,
+      defUser.metadatos === null ? null : JSON.stringify(defUser.metadatos),
+      defUser.metadatos2 === null ? null : JSON.stringify(defUser.metadatos2)
+    );
     user = stmt('SELECT * FROM users WHERE id = ?').get(id);
   }
   if (user.metadatos) { try { user.metadatos = JSON.parse(user.metadatos); } catch {} }
@@ -243,7 +256,23 @@ export function getChat(id) {
   if (cached !== undefined) return cached;
   let chat = stmt('SELECT * FROM chats WHERE id = ?').get(id);
   if (!chat) {
-    stmt(`INSERT OR IGNORE INTO chats (id, isBanned, welcome, goodbye, sWelcome, sGoodbye, nsfw, alerts, gacha, economy, adminonly, primaryBot, antilinks, antistatus, rolls) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, defChat.isBanned, defChat.welcome, defChat.goodbye, defChat.sWelcome, defChat.sGoodbye, defChat.nsfw, defChat.alerts, defChat.gacha, defChat.economy, defChat.adminonly, defChat.primaryBot, defChat.antilinks, defChat.antistatus, defChat.rolls);
+    stmt(`INSERT OR IGNORE INTO chats (id, isBanned, welcome, goodbye, sWelcome, sGoodbye, nsfw, alerts, gacha, economy, adminonly, primaryBot, antilinks, antistatus, rolls) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      id,
+      defChat.isBanned,
+      defChat.welcome,
+      defChat.goodbye,
+      defChat.sWelcome,
+      defChat.sGoodbye,
+      defChat.nsfw,
+      defChat.alerts,
+      defChat.gacha,
+      defChat.economy,
+      defChat.adminonly,
+      defChat.primaryBot,
+      defChat.antilinks,
+      defChat.antistatus,
+      defChat.rolls
+    );
     chat = stmt('SELECT * FROM chats WHERE id = ?').get(id);
   }
   chat.rolls = parseJSON(chat.rolls, {});
@@ -287,7 +316,21 @@ export function getChatUser(chatId, userId, opt = {}) {
   if (cached !== undefined) return cached;
   let cu = stmt('SELECT * FROM chat_users WHERE chat_id = ? AND user_id = ?').get(chatId, userId);
   if (!cu) {
-    stmt(`INSERT OR IGNORE INTO chat_users (chat_id, user_id, coins, bank, lastCmd, usedTime, afk, afkReason, health, stamina, magic, characters, stats) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(chatId, userId, defChatUser.coins, defChatUser.bank, defChatUser.lastCmd, defChatUser.usedTime, defChatUser.afk, defChatUser.afkReason, defChatUser.health, defChatUser.stamina, defChatUser.magic, defChatUser.characters, defChatUser.stats);
+    stmt(`INSERT OR IGNORE INTO chat_users (chat_id, user_id, coins, bank, lastCmd, usedTime, afk, afkReason, health, stamina, magic, characters, stats) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      chatId,
+      userId,
+      defChatUser.coins,
+      defChatUser.bank,
+      defChatUser.lastCmd,
+      defChatUser.usedTime === null ? null : JSON.stringify(defChatUser.usedTime),
+      defChatUser.afk,
+      defChatUser.afkReason,
+      defChatUser.health,
+      defChatUser.stamina,
+      defChatUser.magic,
+      defChatUser.characters,
+      defChatUser.stats
+    );
     cu = stmt('SELECT * FROM chat_users WHERE chat_id = ? AND user_id = ?').get(chatId, userId);
   }
   if (cu) {
@@ -315,7 +358,8 @@ export function getSettings(id) {
   if (cached !== undefined) return cached;
   let row = stmt('SELECT * FROM settings WHERE id = ?').get(id);
   if (!row) {
-    stmt(`INSERT OR IGNORE INTO settings (id, self, prefix, commandsejecut, newsletter_id, nameid, type, link, banner, icon, currency, namebot, botname, owner) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, defSets.self, defSets.prefix, defSets.commandsejecut, defSets.newsletter_id, defSets.nameid, defSets.type, defSets.link, defSets.banner, defSets.icon, defSets.currency, defSets.namebot, defSets.botname, defSets.owner);
+    stmt(`INSERT OR IGNORE INTO settings (id, self, prefix, commandsejecut, newsletter_id, nameid, type, link, banner, icon, currency, namebot, botname, owner) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(id, defSets.self, defSets.prefix, defSets.commandsejecut, defSets.newsletter_id, defSets.nameid, defSets.type, defSets.link, defSets.banner, defSets.icon, defSets.currency, defSets.namebot, defSets.botname, defSets.owner);
     row = stmt('SELECT * FROM settings WHERE id = ?').get(id);
   }
   if (row.prefix != null) {
@@ -399,7 +443,14 @@ export function deletedb(type, ...ids) {
 }
 
 export function setCreate(table, identifier, field, value) {
-  const tableConfig = { users: { primaryKeys: ['id'], identifierFields: ['id'], jsonFields: ['metadatos', 'metadatos2'] }, chats: { primaryKeys: ['id'], identifierFields: ['id'], jsonFields: ['rolls'] }, chat_users: { primaryKeys: ['chat_id', 'user_id'], identifierFields: ['chat_id', 'user_id'], jsonFields: ['characters', 'stats'] }, settings: { primaryKeys: ['id'], identifierFields: ['id'], jsonFields: ['prefix'] }, characters: { primaryKeys: ['id'], identifierFields: ['id'], jsonFields: [], isSimpleTable: true }, sticker_packs: { primaryKeys: ['id'], identifierFields: ['id'], jsonFields: ['packs'] } };
+  const tableConfig = {
+    users: { primaryKeys: ['id'], identifierFields: ['id'], jsonFields: ['metadatos', 'metadatos2'] },
+    chats: { primaryKeys: ['id'], identifierFields: ['id'], jsonFields: ['rolls'] },
+    chat_users: { primaryKeys: ['chat_id','user_id'], identifierFields: ['chat_id','user_id'], jsonFields: ['characters','stats'] },
+    settings: { primaryKeys: ['id'], identifierFields: ['id'], jsonFields: ['prefix'] },
+    characters: { isSimpleTable: true },
+    sticker_packs: { primaryKeys: ['id'], identifierFields: ['id'], jsonFields: ['packs'] }
+  };
   const config = tableConfig[table];
   if (!config) throw new Error(`Tabla '${table}' no soportada`);
   if (config.isSimpleTable) {
@@ -492,7 +543,12 @@ export function clearCache(type, id) {
 }
 
 try {
-  const tables = [{ name: 'users', def: defUser, exclude: ['id'] }, { name: 'chats', def: defChat, exclude: ['id'] }, { name: 'chat_users', def: defChatUser, exclude: ['chat_id', 'user_id'] }, { name: 'settings', def: defSets, exclude: ['id'] }, { name: 'sticker_packs', def: defStickerPack, exclude: ['id'] }];
+  const tables = [
+    { name: 'users', def: defUser, exclude: ['id'] },
+    { name: 'chats', def: defChat, exclude: ['id'] },
+    { name: 'chat_users', def: defChatUser, exclude: ['chat_id', 'user_id'] },
+    { name: 'settings', def: defSets, exclude: ['id'] }
+  ];
   for (const table of tables) {
     if (!stmt(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`).get(table.name)) continue;
     const existingCols = stmt(`PRAGMA table_info(${table.name})`).all();
@@ -545,5 +601,4 @@ export function clearDB() {
   }
 }
 
-
-export default { initDB, getUser, setUser, getChat, setChat, getChatUser, setChatUser, getSettings, setSettings, getCharacter, setCharacter, getStickersPack, setStickersPack, deletedb, setCreate, clearCache, clearDB, db };
+export default { initDB, getUser, setUser, getChat, setChat, getChatUser, setChatUser, getSettings, setSettings, getCharacter, setCharacter, getStickersPack, setStickersPack, deletedb, setCreate, clearCache, clearDB };
