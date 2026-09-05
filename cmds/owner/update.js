@@ -35,18 +35,38 @@ async function reloadCommands(dir = path.join(__dirname, '..')) {
 export default {
   command: ['fix', 'update'],
   category: 'owner',
-  description: 'Actualizar y recargar los comandos del bot.',
+  description: 'Actualizar y recargar los comandos del bot. Usa "update restart" para reiniciar el proceso.',
   isOwner: true,
   run: async ({ msg, sock, text }) => {
+    const args = (text || '').trim().split(/\s+/).filter(Boolean);
+
+    // Si se solicita reiniciar el servidor
+    if (args[0] && ['restart', 'reboot'].includes(args[0].toLowerCase())) {
+      try {
+        await sock.sendMessage(msg.key.remoteJid, { text: '⌛ Reiniciando servidor... (process.exit)'} , { quoted: msg });
+      } catch (e) {
+        console.error('Failed to send restart message:', e);
+      }
+      // Esperar un momento para que el mensaje se envíe y luego salir para que el process manager lo reinicie.
+      setTimeout(() => process.exit(0), 1200);
+      return;
+    }
+
     exec('git pull', async (error, stdout, stderr) => {
       await reloadCommands(path.join(__dirname, '..'));
       let replyMsg = '';
-      if (stdout.includes('Already up to date.')) {
+      if (error) {
+        replyMsg = `❌ Error al ejecutar git pull:\n${error.message}\n${stderr || ''}`;
+      } else if (stdout && stdout.includes('Already up to date.')) {
         replyMsg = 'ꕥ *Estado:* Todo está actualizado';
       } else {
         replyMsg = `*Actualización completada*\n\n${stdout}`;
       }
-      await sock.sendMessage(msg.key.remoteJid, { text: replyMsg }, { quoted: msg });
+      try {
+        await sock.sendMessage(msg.key.remoteJid, { text: replyMsg }, { quoted: msg });
+      } catch (e) {
+        console.error('Failed to send update reply:', e);
+      }
     });
   }
 };
