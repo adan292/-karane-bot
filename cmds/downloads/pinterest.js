@@ -27,6 +27,14 @@ const API_KEY =
   process.env.PINTEREST_API_KEY ||
   ''
 
+function unescapeSlashes(s) {
+  if (!s) return s
+  return s
+    .replace(/\\\\/g, '\\') // \\\\ -> \\
+    .replace(/\\\//g, '/')     // \\/ -> /
+    .replace(/\\u002F/g, '/')   // \u002F -> /
+}
+
 export default {
   command: ['pinterest', 'pin'],
   category: 'downloads',
@@ -47,10 +55,7 @@ export default {
       // Si no hay API configurada, intentaremos un fallback que raspa la página pública de Pinterest
       const useFallback = !API_URL
 
-      if (!API_URL) {
-        // no devolvemos error inmediato: avisamos en consola y seguimos con fallback
-        console.warn('Bunny_girl_bot API no configurada. Intentando fallback con la página pública de Pinterest.')
-      }
+      if (!API_URL) console.warn('Bunny_girl_bot API no configurada. Intentando fallback con la página pública de Pinterest.')
 
       // Construir URL: soporta placeholder {query} o añade ?q= si no existe.
       let url
@@ -85,25 +90,105 @@ export default {
         if (!useFallback) {
           data = { _raw: textBody }
         } else {
-          // En el fallback, parseamos HTML para extraer la primera imagen de Pinterest
+          // En el fallback, parseamos HTML para extraer la mejor URL de imagen posible.
           const html = textBody
-          // Buscar og:image
+          const candidates = new Set()
+
+          // 1) Buscar meta og:image
           let match = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)
-          let imageUrl = match ? match[1] : null
+          if (match && match[1]) candidates.add(unescapeSlashes(match[1]))
 
-          // Si no hay og:image, buscar imágenes de CDN de Pinterest (i.pinimg.com)
-          if (!imageUrl) {
-            match = html.match(/https?:\/\/i.pinimg.com\/[^"'\s>]+/i)
-            if (match) imageUrl = match[0]
+          // 2) Buscar imágenes en atributos comunes: src, data-src, data-srcset, srcset
+          const attrRegex = /(?:src|data-src|data-srcset|data-large-image)=["']([^"']+)["']/ig
+          while ((match = attrRegex.exec(html)) !== null) {
+            const val = match[1]
+            // srcset puede contener múltiples URLs
+            if (val.includes(',')) {
+              val.split(',').forEach(part => {
+                const urlPart = part.trim().split(/\s+/)[0]
+                if (urlPart) candidates.add(unescapeSlashes(urlPart))
+              })
+            } else {
+              candidates.add(unescapeSlashes(val))
+            }
           }
 
-          // Como último recurso, buscar cualquier <img src="...">
-          if (!imageUrl) {
+          // 3) Buscar URLs escapadas de i.pinimg.com (https:\/\/i.pinimg.com\/...)
+          const escapedPinRegex = /https?:\\\/\\\/i\.pinimg\.com\\\/[\w\-\\\/\.]+/ig
+          while ((match = escapedPinRegex.exec(html)) !== null) {
+            candidates.add(unescapeSlashes(match[0]))
+          }
+
+          // 4) Buscar URLs directas a i.pinimg.com no escapadas
+          const pinRegex = /https?:\/\/i\.pinimg\.com\/[\w\-\/\.]+/ig
+          while ((match = pinRegex.exec(html)) !== null) {
+            candidates.add(match[0])
+          }
+
+          // 5) Extraer cualquier URL del HTML (será filtrada luego)
+          const urlRegex = /https?:\\?\\?\\\/\\?\\?[^"'\s<>]+/ig
+          // Simplify: run a broad URL regex on both raw and unescaped HTML
+          const broadUrlRegex = /https?:\/\/[^")'>\s]+/ig
+          let unescaped = unescapeSlashes(html)
+          while ((match = broadUrlRegex.exec(unescaped)) !== null) {
+            candidates.add(match[0])
+          }
+
+          // 6) Intentar extraer JSON embebido que contenga 'images' o 'pin' y buscar URLs dentro
+          const jsonLikeRegex = /\{[^\}]{0,8000}?(?:images|pin|urls|i\.pinimg\.com)[^\}]{0,8000}\}/gis
+          while ((match = jsonLikeRegex.exec(html)) !== null) {
+            const snippet = match[0]
+            // Buscar URLs en el snippet
+            const uRegex = /https?:\\?\\?\\\/\\?\\?[^"'\s<>]+/ig
+            const cleaned = unescapeSlashes(snippet)
+            let um
+            while ((um = broadUrlRegex.exec(cleaned)) !== null) {
+              candidates.add(um[0])
+            }
+          }
+
+          // 7) Como último recurso, buscar la primera <img src=...>
+          if (candidates.size === 0) {
             match = html.match(/<img[^>]+src=["']([^"']+)["']/i)
-            if (match) imageUrl = match[1]
+            if (match && match[1]) candidates.add(unescapeSlashes(match[1]))
           }
 
-          data = { image: imageUrl }
+          // Filtrar candidatos por extensiones de imagen o dominios de Pinterest
+          const imageExtRegex = /\.(jpe?g|png|gif|webp|bmp)(?:\?|$)/i
+          let selected = null
+
+          // Preferir i.pinimg.com
+          for (const c of candidates) {
+            if (!c) continue
+            const normalized = c.split('?')[0]
+            if (/i\.pinimg\.com/.test(normalized) && imageExtRegex.test(normalized)) {
+              selected = c
+              break
+            }
+          }
+
+          if (!selected) {
+            for (const c of candidates) {
+              if (!c) continue
+              if (imageExtRegex.test(c)) {
+                selected = c
+                break
+              }
+            }
+          }
+
+          // Si aún no seleccionado, tomar el primer candidato que parezca URL
+          if (!selected) {
+            for (const c of candidates) {
+              if (!c) continue
+              if (/^https?:\/\//i.test(c)) {
+                selected = c
+                break
+              }
+            }
+          }
+
+          data = { image: selected }
         }
       }
 
